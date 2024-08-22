@@ -130,7 +130,7 @@ class EEGDataset(Dataset):
 
     def preprocess_sample(
         self,
-        sample,
+        sample,  # np.array
         seq_len,
         labels=None
         ) -> Dict[str, torch.Tensor]:

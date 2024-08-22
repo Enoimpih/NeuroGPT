@@ -1,38 +1,51 @@
 import os
 import pdb
 import numpy as np
-from batcher.base import EEGDataset
+from src.batcher.base import EEGDataset
 from scipy.io import loadmat
 from scipy.signal import butter, filtfilt
+import glob
+from src.batcher.dataset import RegressionDataset
 
-# test
-class MotorImageryDataset(EEGDataset):
+class MotorImageryDataset(EEGDataset):  # SparrKULee
     def __init__(self, filenames, sample_keys, chunk_len=500, num_chunks=10, ovlp=50, root_path="", gpt_only=True):
         super().__init__(filenames, sample_keys, chunk_len, num_chunks, ovlp, root_path=root_path, gpt_only=gpt_only)
 
-        self.data_all = []
+        self.data_all = []  # numpy.array
         for fn in self.filenames:
             self.data_all.append(np.load(fn))
 
-        self.mi_types = {769: 'left', 770: 'right',
-                         771: 'foot', 772: 'tongue', 1023: 'rejected'} # , 783: 'unknown', 1023: 'rejected'
-        # Types of motor imagery
-        self.labels_string2int = {'left': 0, 'right': 1,
-                         'foot': 2, 'tongue':3 } #, 'unknown': -1
-        self.Fs = 250  # 250Hz from original paper
+        self.Fs = 64  # 64Hz from original paper
         self.P = np.load("./inputs/tMatrix_value.npy")
 
         self.trials, self.labels, self.num_trials_per_sub = self.get_trials_all()
         # keys of data ['s', 'etyp', 'epos', 'edur', 'artifacts']
 
+
     def __len__(self):
         return sum(self.num_trials_per_sub)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx):  # normalize->chunk+mask
         return self.preprocess_sample(self.trials[idx], self.num_chunks, self.labels[idx])
 
-    def map2pret(self, data):
-        return np.matmul(self.P, data) # 22x22, 22xTime
+    def get_trials_all(self):
+        trials_all = []  # (dim of trials, num of trials)
+        labels_all = []  # (num of labels, num of trials)
+        total_num = []  # (num of trials, num of subs)
+        for sub_id in range(len(self.data_all)):
+            trials, labels = self.get_trials_from_single_subj(sub_id)
+            total_num.append(len(trials))
+
+            trials_all.append(np.array(trials))
+            labels_all.append(np.array(labels))
+        # reordered_data = self.reorder_channels(np.vstack(trials_all))
+        trials_all_arr = np.vstack(trials_all)
+        # map to same channel configuration as pretraining
+        trials_all_arr = self.map2pret(trials_all_arr)
+        return self.normalize(trials_all_arr), np.array(labels_all).flatten(), total_num
+
+    # def normalize(self, data):
+    #     return (data - np.mean(data)) / np.std(data)
 
     def get_trials_from_single_subj(self, sub_id):
         raw = self.data_all[sub_id]['s'].T
@@ -61,8 +74,8 @@ class MotorImageryDataset(EEGDataset):
 
                 start = events_position[0, index]
                 stop = start + events_duration[0, index]
-                trial = raw[:22, start+500 : stop-375]
-                #add band-pass filter
+                trial = raw[:22, start + 500: stop - 375]
+                # add band-pass filter
                 # self.bandpass_filter(trial, lowcut=4, highcut=40, fs=250, order=5)
                 trials.append(trial)
             except:
@@ -74,27 +87,11 @@ class MotorImageryDataset(EEGDataset):
         label_path = self.root_path + "true_labels/"
         base_name = os.path.basename(self.filenames[sub_id])
         sub_name = os.path.splitext(base_name)[0]
-        labels = loadmat(label_path + sub_name +".mat")["classlabel"]
+        labels = loadmat(label_path + sub_name + ".mat")["classlabel"]
         return labels.squeeze() - 1
 
-    def get_trials_all(self):
-        trials_all = []
-        labels_all = []
-        total_num = []
-        for sub_id in range(len(self.data_all)):
-            trials, labels = self.get_trials_from_single_subj(sub_id)
-            total_num.append(len(trials))
-            
-            trials_all.append(np.array(trials))
-            labels_all.append(np.array(labels))
-        # reordered_data = self.reorder_channels(np.vstack(trials_all))
-        trials_all_arr = np.vstack(trials_all)
-        # map to same channel configuration as pretraining
-        trials_all_arr = self.map2pret(trials_all_arr)
-        return self.normalize(trials_all_arr), np.array(labels_all).flatten(), total_num
-    
-    # def normalize(self, data):
-    #     return (data - np.mean(data)) / np.std(data)
+    def map2pret(self, data):
+        return np.matmul(self.P, data) # 22x22, 22xTime
     
     def bandpass_filter(self, data, lowcut, highcut, fs, order=5):
         """
